@@ -1,0 +1,12 @@
+services:
+  feedersafe:
+    build: .
+    container_name: feedersafe-app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/app
+    environment:
+      - PYTHONPATH=/app/src
+    command: streamlit run streamlit_app/Home.py --server.address=0.0.0.0 --server.port=8501
+
