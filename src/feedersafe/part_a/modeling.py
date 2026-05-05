@@ -100,7 +100,7 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
     y_train, y_test = train_df["load_kw"], test_df["load_kw"]
 
     if LGBMRegressor:
-        gbm = LGBMRegressor(n_estimators=220, learning_rate=0.05, num_leaves=31, random_state=42)
+        gbm = LGBMRegressor(n_estimators=50, learning_rate=0.05, num_leaves=31, random_state=42, n_jobs=-1,  verbose=10 )
     else:
         gbm = GradientBoostingRegressor(random_state=42)
     gbm.fit(x_train, y_train)
