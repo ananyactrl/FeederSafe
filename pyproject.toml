@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feedersafe"
+version = "0.1.0"
+description = "Grid-constrained EV charging planner prototype"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "lightgbm",
+  "torch",
+  "geopandas",
+  "shapely",
+  "folium",
+  "streamlit",
+  "streamlit-folium",
+  "plotly",
+  "scipy",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

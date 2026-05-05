@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,7 @@ from sklearn.linear_model import QuantileRegressor
 from sklearn.metrics import mean_pinball_loss
 from sklearn.preprocessing import StandardScaler
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 
 try:
@@ -77,6 +78,16 @@ def _build_sequences(load_series: pd.Series, seq_len: int = 48) -> Tuple[np.ndar
     return np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)
 
 
+def _predict_in_batches(model: nn.Module, arr: np.ndarray, batch_size: int = 512) -> np.ndarray:
+    preds: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(arr), batch_size):
+            batch = torch.tensor(arr[start : start + batch_size], dtype=torch.float32)
+            preds.append(model(batch).cpu().numpy())
+    return np.concatenate(preds) if preds else np.array([], dtype=np.float32)
+
+
 def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_meter: pd.DataFrame) -> PartAOutput:
     df = feeder_timeseries.merge(feeders[["feeder_id", "ev_registration_count", "rated_capacity_kva"]], on="feeder_id")
     df = df.sort_values(["feeder_id", "timestamp"]).reset_index(drop=True)
@@ -103,22 +114,26 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
     test_seq_x_flat = scaler.transform(test_seq_x.reshape(test_seq_x.shape[0], -1)).reshape(test_seq_x.shape)
     x_t = torch.tensor(seq_x_flat, dtype=torch.float32)
     y_t = torch.tensor(seq_y, dtype=torch.float32)
+    train_loader = DataLoader(
+        TensorDataset(x_t, y_t),
+        batch_size=512,
+        shuffle=True,
+    )
 
     model = BiLSTMRegressor(hidden_size=24)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     loss_fn = nn.MSELoss()
     model.train()
     for _ in range(5):  # Short training for hackathon prototype speed.
-        optimizer.zero_grad()
-        pred = model(x_t)
-        loss = loss_fn(pred, y_t)
-        loss.backward()
-        optimizer.step()
+        for xb, yb in train_loader:
+            optimizer.zero_grad()
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+            loss.backward()
+            optimizer.step()
 
-    model.eval()
-    with torch.no_grad():
-        lstm_train_pred = model(torch.tensor(seq_x_flat, dtype=torch.float32)).numpy()
-        lstm_test_pred = model(torch.tensor(test_seq_x_flat, dtype=torch.float32)).numpy()
+    lstm_train_pred = _predict_in_batches(model, seq_x_flat, batch_size=512)
+    lstm_test_pred = _predict_in_batches(model, test_seq_x_flat, batch_size=512)
 
     meta_train = pd.DataFrame(
         {"gbm": gbm_pred_train[-len(lstm_train_pred) :], "bilstm": lstm_train_pred}

@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: feedersafe
+Version: 0.1.0
+Summary: Grid-constrained EV charging planner prototype
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scikit-learn
+Requires-Dist: lightgbm
+Requires-Dist: torch
+Requires-Dist: geopandas
+Requires-Dist: shapely
+Requires-Dist: folium
+Requires-Dist: streamlit
+Requires-Dist: streamlit-folium
+Requires-Dist: plotly
+Requires-Dist: scipy
