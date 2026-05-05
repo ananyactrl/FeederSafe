@@ -1,0 +1,9 @@
+feeder_id,hour,status,predicted_load_p95_kw,capacity_pct,rated_capacity_kva,users_delay_2h,site_addition_effect_pct,combined_effect_pct,counterfactual_text
+DT-249,7,CRITICAL,180.97234966216422,106.45432333068484,170,10.0,8,18,"To move from CRITICAL to HIGH: delay 10 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,8,CRITICAL,176.61186441723672,103.88933201013924,170,10.0,8,18,"To move from CRITICAL to HIGH: delay 10 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,11,CRITICAL,172.34433094455954,101.37901820268209,170,10.0,8,18,"To move from CRITICAL to HIGH: delay 10 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,18,CRITICAL,196.536854294124,115.60991429066117,170,15.0,8,18,"To move from CRITICAL to HIGH: delay 15 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,19,CRITICAL,197.48603918558695,116.1682583444629,170,15.0,8,18,"To move from CRITICAL to HIGH: delay 15 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,20,CRITICAL,196.93450247899833,115.84382498764607,170,15.0,8,18,"To move from CRITICAL to HIGH: delay 15 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,21,CRITICAL,197.554390521595,116.20846501270293,170,15.0,8,18,"To move from CRITICAL to HIGH: delay 15 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
+DT-249,22,CRITICAL,190.5946841288758,112.11452007580928,170,13.0,8,18,"To move from CRITICAL to HIGH: delay 13 users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."

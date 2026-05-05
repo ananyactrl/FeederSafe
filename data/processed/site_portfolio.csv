@@ -1,0 +1,4 @@
+portfolio_rank,site_id,zone,assigned_feeder_id,decision,demand_score,iterations_selected,mean_delta_capacity_pct,best_iteration_improvement,feeder_improvements,portfolio_score,rollout_priority
+1,SITE-060,Yelahanka,DT-237,APPROVED,71.11,1,-1.7639999999999958,-1.7639999999999958,1,33.27,Immediate (Phase 1)
+2,SITE-134,Yelahanka,DT-237,APPROVED,68.39,1,-1.7639999999999958,-1.7639999999999958,1,32.32,Immediate (Phase 1)
+3,SITE-151,Jayanagar,DT-224,APPROVED,57.41,1,-1.7639999999999958,-1.7639999999999958,1,28.47,Immediate (Phase 1)

@@ -16,7 +16,7 @@ def run_pipeline(config: AppConfig | None = None) -> dict[str, Path]:
     synthetic = generate_synthetic_data(cfg)
     part_a = run_part_a(synthetic.feeders, synthetic.feeder_timeseries, synthetic.smart_meter)
     part_b = run_part_b(cfg, synthetic.feeders, synthetic.candidate_sites, part_a.feeder_hourly_risk)
-    coupled = run_coupled_impact(part_a.feeder_hourly_risk, part_b.site_results)
+    coupled = run_coupled_impact(part_a.feeder_hourly_risk, part_b.site_results, feeders=synthetic.feeders)
     site_portfolio = build_site_portfolio(coupled, part_b.site_results)
     coupling_iterations = (
         coupled.groupby("iteration", as_index=False)
