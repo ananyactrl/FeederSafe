@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,7 @@ from sklearn.linear_model import QuantileRegressor
 from sklearn.metrics import mean_pinball_loss
 from sklearn.preprocessing import StandardScaler
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 
 try:
@@ -28,7 +29,7 @@ class PartAOutput:
 
 
 class BiLSTMRegressor(nn.Module):
-    def __init__(self, hidden_size: int = 32):
+    def __init__(self, hidden_size: int = 16):  # reduced from 24
         super().__init__()
         self.lstm = nn.LSTM(
             input_size=1,
@@ -52,7 +53,9 @@ def _prepare_features(df: pd.DataFrame, include_signature: bool = True) -> pd.Da
     x = df.copy()
     x["hour"] = x["timestamp"].dt.hour
     x["day_of_week"] = x["timestamp"].dt.weekday
-    x["feeder_historical_load"] = x.groupby("feeder_id")["load_kw"].shift(1).fillna(x["load_kw"].median())
+    x["feeder_historical_load"] = (
+        x.groupby("feeder_id")["load_kw"].shift(1).fillna(x["load_kw"].median())
+    )
     cols = [
         "hour",
         "day_of_week",
@@ -66,60 +69,115 @@ def _prepare_features(df: pd.DataFrame, include_signature: bool = True) -> pd.Da
     return x[cols]
 
 
-def _build_sequences(load_series: pd.Series, seq_len: int = 48) -> Tuple[np.ndarray, np.ndarray]:
-    values = load_series.to_numpy(dtype=np.float32)
-    if len(values) <= seq_len:
-        return np.zeros((1, seq_len, 1), dtype=np.float32), np.array([values[-1]], dtype=np.float32)
-    xs, ys = [], []
-    for i in range(seq_len, len(values)):
-        xs.append(values[i - seq_len : i].reshape(seq_len, 1))
-        ys.append(values[i])
-    return np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)
+def _build_sequences_per_feeder(
+    df: pd.DataFrame, seq_len: int = 24, max_seqs_per_feeder: int = 200
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build sequences per feeder to avoid cross-feeder contamination and
+    cap total sequences to keep training fast on a hackathon machine.
+    seq_len reduced to 24 (1 day of hourly data) from 48.
+    """
+    all_x, all_y = [], []
+    for _, grp in df.groupby("feeder_id"):
+        values = grp["load_kw"].to_numpy(dtype=np.float32)
+        if len(values) <= seq_len:
+            continue
+        xs, ys = [], []
+        for i in range(seq_len, len(values)):
+            xs.append(values[i - seq_len : i].reshape(seq_len, 1))
+            ys.append(values[i])
+        # cap per feeder to keep total manageable
+        if len(xs) > max_seqs_per_feeder:
+            xs = xs[-max_seqs_per_feeder:]
+            ys = ys[-max_seqs_per_feeder:]
+        all_x.extend(xs)
+        all_y.extend(ys)
+    if not all_x:
+        return np.zeros((1, seq_len, 1), dtype=np.float32), np.array([0.0], dtype=np.float32)
+    return np.array(all_x, dtype=np.float32), np.array(all_y, dtype=np.float32)
 
 
-def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_meter: pd.DataFrame) -> PartAOutput:
-    df = feeder_timeseries.merge(feeders[["feeder_id", "ev_registration_count", "rated_capacity_kva"]], on="feeder_id")
+def _predict_in_batches(model: nn.Module, arr: np.ndarray, batch_size: int = 256) -> np.ndarray:
+    preds: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(arr), batch_size):
+            batch = torch.tensor(arr[start : start + batch_size], dtype=torch.float32)
+            preds.append(model(batch).cpu().numpy())
+    return np.concatenate(preds) if preds else np.array([], dtype=np.float32)
+
+
+def run_part_a(
+    feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_meter: pd.DataFrame
+) -> PartAOutput:
+    df = feeder_timeseries.merge(
+        feeders[["feeder_id", "ev_registration_count", "rated_capacity_kva"]], on="feeder_id"
+    )
     df = df.sort_values(["feeder_id", "timestamp"]).reset_index(drop=True)
+
+    # ── train/test split ────────────────────────────────────────────────────
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split].copy()
     test_df = df.iloc[split:].copy()
 
+    # ── LightGBM / GBM base learner ─────────────────────────────────────────
     x_train = _prepare_features(train_df, include_signature=True)
     x_test = _prepare_features(test_df, include_signature=True)
     y_train, y_test = train_df["load_kw"], test_df["load_kw"]
 
     if LGBMRegressor:
-        gbm = LGBMRegressor(n_estimators=220, learning_rate=0.05, num_leaves=31, random_state=42)
+        gbm = LGBMRegressor(
+            n_estimators=50,
+            learning_rate=0.05,
+            num_leaves=31,
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+        )
     else:
         gbm = GradientBoostingRegressor(random_state=42)
     gbm.fit(x_train, y_train)
     gbm_pred_train = gbm.predict(x_train)
     gbm_pred_test = gbm.predict(x_test)
 
-    seq_x, seq_y = _build_sequences(train_df["load_kw"], seq_len=48)
-    test_seq_x, _ = _build_sequences(test_df["load_kw"], seq_len=48)
+    # ── BiLSTM base learner (per-feeder sequences, capped) ──────────────────
+    SEQ_LEN = 24  # 1 day of hourly readings — faster than 48
+    seq_x, seq_y = _build_sequences_per_feeder(train_df, seq_len=SEQ_LEN, max_seqs_per_feeder=150)
+    test_seq_x, test_seq_y = _build_sequences_per_feeder(test_df, seq_len=SEQ_LEN, max_seqs_per_feeder=150)
+
     scaler = StandardScaler()
     seq_x_flat = scaler.fit_transform(seq_x.reshape(seq_x.shape[0], -1)).reshape(seq_x.shape)
-    test_seq_x_flat = scaler.transform(test_seq_x.reshape(test_seq_x.shape[0], -1)).reshape(test_seq_x.shape)
+    test_seq_x_flat = scaler.transform(
+        test_seq_x.reshape(test_seq_x.shape[0], -1)
+    ).reshape(test_seq_x.shape)
+
     x_t = torch.tensor(seq_x_flat, dtype=torch.float32)
     y_t = torch.tensor(seq_y, dtype=torch.float32)
+    train_loader = DataLoader(
+        TensorDataset(x_t, y_t),
+        batch_size=256,  # reduced from 512
+        shuffle=True,
+    )
 
-    model = BiLSTMRegressor(hidden_size=24)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    model = BiLSTMRegressor(hidden_size=16)  # smaller hidden size
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)  # higher lr = fewer epochs needed
     loss_fn = nn.MSELoss()
     model.train()
-    for _ in range(5):  # Short training for hackathon prototype speed.
-        optimizer.zero_grad()
-        pred = model(x_t)
-        loss = loss_fn(pred, y_t)
-        loss.backward()
-        optimizer.step()
+    for epoch in range(3):  # 3 epochs, small batches → fast
+        for xb, yb in train_loader:
+            optimizer.zero_grad()
+            loss = loss_fn(model(xb), yb)
+            loss.backward()
+            optimizer.step()
+        print(f"  BiLSTM epoch {epoch + 1}/3 done")
 
-    model.eval()
-    with torch.no_grad():
-        lstm_train_pred = model(torch.tensor(seq_x_flat, dtype=torch.float32)).numpy()
-        lstm_test_pred = model(torch.tensor(test_seq_x_flat, dtype=torch.float32)).numpy()
+    lstm_train_pred = _predict_in_batches(model, seq_x_flat, batch_size=256)
+    lstm_test_pred = _predict_in_batches(model, test_seq_x_flat, batch_size=256)
 
+    # ── Meta-learner (quantile regression at q=0.95) ─────────────────────────
+    # Align GBM predictions to the shorter LSTM prediction length
     meta_train = pd.DataFrame(
         {"gbm": gbm_pred_train[-len(lstm_train_pred) :], "bilstm": lstm_train_pred}
     )
@@ -131,8 +189,10 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
     meta_test = pd.DataFrame({"gbm": aligned_gbm_test, "bilstm": lstm_test_pred})
     p95_pred = meta_model.predict(meta_test)
     y_eval = y_test.iloc[-len(p95_pred) :].to_numpy()
-    _ = mean_pinball_loss(y_eval, p95_pred, alpha=0.95)
+    pinball = mean_pinball_loss(y_eval, p95_pred, alpha=0.95)
+    print(f"  Pinball loss (q=0.95): {pinball:.4f}")
 
+    # ── Risk classification ───────────────────────────────────────────────────
     eval_df = test_df.iloc[-len(p95_pred) :].copy()
     eval_df["predicted_load_p95_kw"] = p95_pred
     eval_df["capacity_pct"] = 100 * eval_df["predicted_load_p95_kw"] / eval_df["rated_capacity_kva"]
@@ -151,10 +211,15 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
         )
     )
 
+    # ── Nudge recommendations ─────────────────────────────────────────────────
     stressed = hourly[hourly["status"].isin(["HIGH", "CRITICAL"])].copy()
     stressed["discount_inr_per_kwh"] = np.where(stressed["status"].eq("CRITICAL"), 3.0, 1.5)
-    stressed["projected_load_shift_pct"] = (stressed["discount_inr_per_kwh"] * 8).round(0).astype(int)
-    stressed["time_window"] = stressed["hour"].astype(str) + ":00-" + (stressed["hour"] + 2).astype(str) + ":00"
+    stressed["projected_load_shift_pct"] = (
+        stressed["discount_inr_per_kwh"] * 8
+    ).round(0).astype(int)
+    stressed["time_window"] = (
+        stressed["hour"].astype(str) + ":00-" + (stressed["hour"] + 2).astype(str) + ":00"
+    )
     stressed["off_peak_window"] = "23:00-05:00"
     stressed["nudge_text"] = (
         stressed["feeder_id"]
@@ -171,28 +236,37 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
         + "% load shift"
     )
 
+    # ── Counterfactuals ───────────────────────────────────────────────────────
     critical = hourly[hourly["status"].eq("CRITICAL")].copy()
     if not critical.empty:
-        critical["users_delay_2h"] = np.ceil((critical["capacity_pct"] - 90) / 1.8).clip(lower=10)
+        critical["users_delay_2h"] = np.ceil(
+            (critical["capacity_pct"] - 90) / 1.8
+        ).clip(lower=10)
+        critical["site_addition_effect_pct"] = 8
+        critical["combined_effect_pct"] = 18
+        critical["counterfactual_text"] = (
+            "To move from CRITICAL to HIGH: delay "
+            + critical["users_delay_2h"].astype(int).astype(str)
+            + " users by 2h, or add nearest vetted public site (~8% relief),"
+            + " or combine both (~18% relief)."
+        )
     else:
-        critical["users_delay_2h"] = []
-    critical["site_addition_effect_pct"] = 8
-    critical["combined_effect_pct"] = 18
-    critical["counterfactual_text"] = (
-        "To move from CRITICAL to HIGH: delay "
-        + critical["users_delay_2h"].astype(int).astype(str)
-        + " users by 2h, or add nearest vetted public site (~8% relief), or combine both (~18% relief)."
-    )
+        critical["users_delay_2h"] = pd.Series(dtype=float)
+        critical["site_addition_effect_pct"] = pd.Series(dtype=float)
+        critical["combined_effect_pct"] = pd.Series(dtype=float)
+        critical["counterfactual_text"] = pd.Series(dtype=str)
 
-    # With-vs-without home charging signal for explainability.
+    # ── With-vs-without home charging signal ─────────────────────────────────
     x_train_wo = _prepare_features(train_df, include_signature=False)
     x_test_wo = _prepare_features(test_df, include_signature=False)
-    model_wo = GradientBoostingRegressor(random_state=42)
+    model_wo = GradientBoostingRegressor(random_state=42, n_estimators=50)
     model_wo.fit(x_train_wo, y_train)
-    pred_wo = model_wo.predict(x_test_wo[-len(p95_pred) :])
+    pred_wo = model_wo.predict(x_test_wo.iloc[-len(p95_pred) :])
     with_without = eval_df[["timestamp", "feeder_id", "predicted_load_p95_kw"]].copy()
     with_without["pred_without_signature_kw"] = pred_wo
-    with_without["delta_kw"] = with_without["predicted_load_p95_kw"] - with_without["pred_without_signature_kw"]
+    with_without["delta_kw"] = (
+        with_without["predicted_load_p95_kw"] - with_without["pred_without_signature_kw"]
+    )
 
     return PartAOutput(
         feeder_hourly_risk=hourly,
@@ -200,4 +274,3 @@ def run_part_a(feeders: pd.DataFrame, feeder_timeseries: pd.DataFrame, smart_met
         counterfactuals=critical,
         with_without_signal=with_without,
     )
-

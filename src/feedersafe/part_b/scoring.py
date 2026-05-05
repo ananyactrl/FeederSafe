@@ -35,15 +35,34 @@ def run_part_b(
         .groupby("feeder_id", as_index=False)
         .tail(1)[["feeder_id", "capacity_pct", "status"]]
     )
+
+    # Merge feeder attributes — drop the redundant right-side feeder_id col immediately
     df = candidate_sites.merge(
-        feeders[["feeder_id", "ev_registration_count", "distance_to_11kv_m", "phase_imbalance_pct", "rated_capacity_kva"]],
+        feeders[["feeder_id", "ev_registration_count", "distance_to_11kv_m",
+                 "phase_imbalance_pct", "rated_capacity_kva", "zone"]],
         left_on="assigned_feeder_id",
         right_on="feeder_id",
         how="left",
-    ).merge(latest_risk, left_on="assigned_feeder_id", right_on="feeder_id", how="left", suffixes=("", "_risk"))
+        suffixes=("", "_feeder"),  # candidate_sites already has zone; feeder zone → zone_feeder
+    ).drop(columns=["feeder_id"], errors="ignore")  # drop the right-side feeder_id duplicate
+    # resolve zone: prefer candidate_sites zone (already present), fall back to feeder zone
+    if "zone_feeder" in df.columns:
+        df["zone"] = df["zone"].fillna(df["zone_feeder"])
+        df.drop(columns=["zone_feeder"], inplace=True)
+
+    # Merge risk scores — drop redundant feeder_id_risk col
+    df = df.merge(
+        latest_risk,
+        left_on="assigned_feeder_id",
+        right_on="feeder_id",
+        how="left",
+        suffixes=("", "_risk"),
+    ).drop(columns=["feeder_id_risk"], errors="ignore")
 
     df["dt_headroom_pct"] = (100 - df["capacity_pct"]).fillna(35)
-    df["ev_density_score"] = np.clip(df["ev_registration_count"] / df["ev_registration_count"].max() * 100, 0, 100)
+    df["ev_density_score"] = np.clip(
+        df["ev_registration_count"] / df["ev_registration_count"].max() * 100, 0, 100
+    )
     df["proximity_score"] = np.clip((1 - df["distance_to_11kv_m"] / 300) * 100, 0, 100)
     df["headroom_score"] = np.clip(df["dt_headroom_pct"], 0, 100)
     df["road_score"] = np.clip(df["accessibility_score"], 0, 100)
@@ -57,6 +76,7 @@ def run_part_b(
         + 0.10 * df["land_use_score"]
     ).round(2)
 
+    # ── Mechanical Veto Matrix ───────────────────────────────────────────────
     rejections = []
     for row in df.itertuples(index=False):
         reasons = []
@@ -71,9 +91,11 @@ def run_part_b(
         if row.phase_imbalance_pct >= config.phase_imbalance_max_pct:
             reasons.append("Phase balance exceeds threshold")
         rejections.append("; ".join(reasons) if reasons else "APPROVED")
+
     df["veto_reasons"] = rejections
     df["decision"] = np.where(df["veto_reasons"].eq("APPROVED"), "APPROVED", "REJECTED")
 
+    # ── Nearest feasible alternative for rejected sites ──────────────────────
     approved = df[df["decision"].eq("APPROVED")].copy()
     if not approved.empty:
         tree = cKDTree(approved[["lat", "lon"]].to_numpy())
@@ -88,5 +110,8 @@ def run_part_b(
         nearest_alt = [None] * len(df)
     df["nearest_feasible_alternative"] = nearest_alt
 
-    return PartBOutput(site_results=df.sort_values(["decision", "demand_score"], ascending=[True, False]))
-
+    return PartBOutput(
+        site_results=df.sort_values(
+            ["decision", "demand_score"], ascending=[True, False]
+        ).reset_index(drop=True)
+    )

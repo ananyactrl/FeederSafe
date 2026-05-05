@@ -25,16 +25,24 @@ def _site_feeder_relief(
     - Small spillover to nearby stressed feeders.
     """
     base_relief = max(1.5, min(10.0, abs(elasticity) * 14 * nudge_strength))
+
     if site_row["assigned_feeder_id"] == feeder_row["feeder_id"]:
         return base_relief * 1.6
-    if site_row["zone"] == feeder_row["zone"]:
+
+    # zone comparison — feeder_hourly_risk may not carry a zone column,
+    # so use .get() with a sentinel to avoid KeyError
+    site_zone = site_row.get("zone", None)
+    feeder_zone = feeder_row.get("zone", None)
+    if site_zone is not None and feeder_zone is not None and site_zone == feeder_zone:
         return base_relief * 0.7
+
     return base_relief * 0.35
 
 
 def run_coupled_impact(
     feeder_hourly_risk: pd.DataFrame,
     site_results: pd.DataFrame,
+    feeders: pd.DataFrame | None = None,
     elasticity: float = -0.3,
     max_iterations: int = 8,
     convergence_eps: float = 0.2,
@@ -47,6 +55,13 @@ def run_coupled_impact(
         .reset_index(drop=True)
     )
     stressed["status"] = stressed["capacity_pct"].map(_status_from_capacity)
+
+    # Enrich stressed with zone if available from feeders
+    if feeders is not None and "zone" in feeders.columns and "zone" not in stressed.columns:
+        stressed = stressed.merge(
+            feeders[["feeder_id", "zone"]], on="feeder_id", how="left"
+        )
+
     approved = (
         site_results[site_results["decision"].eq("APPROVED")]
         .sort_values("demand_score", ascending=False)
@@ -76,7 +91,6 @@ def run_coupled_impact(
 
     selected_sites: set[str] = set()
     rows: list[dict] = []
-    convergence_history: list[float] = []
 
     for iteration in range(1, max_iterations + 1):
         stressed_count_before = int((stressed["capacity_pct"] > 85).sum())
@@ -92,11 +106,11 @@ def run_coupled_impact(
             for _, feeder in stressed.iterrows():
                 if feeder["capacity_pct"] <= 85:
                     continue
-                total_relief += _site_feeder_relief(site, feeder, elasticity=elasticity, nudge_strength=1.0)
-            # Penalize sites with lower demand score and weak headroom.
+                total_relief += _site_feeder_relief(
+                    site, feeder, elasticity=elasticity, nudge_strength=1.0
+                )
             penalty = max(0.0, (65 - float(site.get("demand_score", 65))) * 0.03)
-            score = total_relief - penalty
-            scores.append((site["site_id"], score))
+            scores.append((site["site_id"], total_relief - penalty))
 
         if not scores:
             break
@@ -110,21 +124,24 @@ def run_coupled_impact(
         before_map = stressed.set_index("feeder_id")["capacity_pct"].to_dict()
         selected_this_iter = approved[approved["site_id"].isin(pick_ids)].copy()
 
-        # Apply cumulative relief from selected sites this iteration.
         for feeder_idx, feeder in stressed.iterrows():
             relief = 0.0
             for _, site in selected_this_iter.iterrows():
-                relief += _site_feeder_relief(site, feeder, elasticity=elasticity, nudge_strength=1.0)
-            # Diminishing returns as feeder gets healthier.
-            health_factor = 1.0 if feeder["capacity_pct"] > 100 else (0.8 if feeder["capacity_pct"] > 85 else 0.4)
-            relief *= health_factor
-            stressed.at[feeder_idx, "capacity_pct"] = max(40.0, feeder["capacity_pct"] - relief)
+                relief += _site_feeder_relief(
+                    site, feeder, elasticity=elasticity, nudge_strength=1.0
+                )
+            health_factor = (
+                1.0 if feeder["capacity_pct"] > 100
+                else (0.8 if feeder["capacity_pct"] > 85 else 0.4)
+            )
+            stressed.at[feeder_idx, "capacity_pct"] = max(
+                40.0, feeder["capacity_pct"] - relief * health_factor
+            )
 
         stressed["status"] = stressed["capacity_pct"].map(_status_from_capacity)
         stressed_count_after = int((stressed["capacity_pct"] > 85).sum())
         objective_after = float(np.maximum(stressed["capacity_pct"] - 85, 0).sum())
         delta_obj = objective_before - objective_after
-        convergence_history.append(delta_obj)
         converged = abs(delta_obj) <= convergence_eps
 
         for site_id in pick_ids:
@@ -158,7 +175,9 @@ def run_coupled_impact(
         return out
 
     penalty = (
-        out.groupby("site_id")["delta_capacity_pct"].mean().rename("coupling_penalty")
+        out.groupby("site_id")["delta_capacity_pct"]
+        .mean()
+        .rename("coupling_penalty")
         .reset_index()
         .assign(coupling_penalty=lambda d: np.clip(d["coupling_penalty"], -20, 10))
     )
@@ -169,10 +188,6 @@ def build_site_portfolio(
     coupled_impact: pd.DataFrame,
     site_results: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Build a ranked rollout list from optimization traces.
-    Higher rank = stronger average relief with better feasibility score.
-    """
     if coupled_impact.empty:
         return pd.DataFrame(
             columns=[
@@ -201,10 +216,14 @@ def build_site_portfolio(
         )
     )
 
+    # Only include columns that actually exist in site_results
+    portfolio_cols = ["site_id", "assigned_feeder_id", "decision", "demand_score",
+                      "nearest_feasible_alternative"]
+    if "zone" in site_results.columns:
+        portfolio_cols.insert(1, "zone")
+
     merged = impact_site.merge(
-        site_results[
-            ["site_id", "zone", "assigned_feeder_id", "decision", "demand_score", "nearest_feasible_alternative"]
-        ],
+        site_results[[c for c in portfolio_cols if c in site_results.columns]],
         on="site_id",
         how="left",
     )
@@ -215,7 +234,9 @@ def build_site_portfolio(
     relief_component = np.clip(-merged["mean_delta_capacity_pct"], 0, 30) * 2.2
     consistency_component = np.clip(merged["iterations_selected"], 0, 8) * 4.5
     demand_component = np.clip(merged["demand_score"], 0, 100) * 0.35
-    merged["portfolio_score"] = (relief_component + consistency_component + demand_component).round(2)
+    merged["portfolio_score"] = (
+        relief_component + consistency_component + demand_component
+    ).round(2)
     merged = merged.sort_values("portfolio_score", ascending=False).reset_index(drop=True)
     merged["portfolio_rank"] = np.arange(1, len(merged) + 1)
     merged["rollout_priority"] = np.select(
@@ -223,20 +244,14 @@ def build_site_portfolio(
         ["Immediate (Phase 1)", "Near-term (Phase 2)"],
         default="Later (Phase 3)",
     )
-    return merged[
-        [
-            "portfolio_rank",
-            "site_id",
-            "zone",
-            "assigned_feeder_id",
-            "decision",
-            "demand_score",
-            "iterations_selected",
-            "mean_delta_capacity_pct",
-            "best_iteration_improvement",
-            "feeder_improvements",
-            "portfolio_score",
-            "rollout_priority",
-        ]
-    ]
 
+    out_cols = [
+        "portfolio_rank", "site_id", "assigned_feeder_id", "decision",
+        "demand_score", "iterations_selected", "mean_delta_capacity_pct",
+        "best_iteration_improvement", "feeder_improvements",
+        "portfolio_score", "rollout_priority",
+    ]
+    if "zone" in merged.columns:
+        out_cols.insert(2, "zone")
+
+    return merged[[c for c in out_cols if c in merged.columns]]

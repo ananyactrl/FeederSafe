@@ -1,0 +1,4 @@
+site_id,feeder_id,before_status,after_status,capacity_pct_before,capacity_pct_after,delta_capacity_pct,net_effect,iteration,selected_in_iteration,objective_before,objective_after,stressed_before,stressed_after,converged,coupling_penalty
+SITE-060,DT-249,SAFE,SAFE,82.9322553800929,81.1682553800929,-1.7639999999999958,improves,1,True,0.0,0.0,0,0,True,-1.7639999999999958
+SITE-134,DT-249,SAFE,SAFE,82.9322553800929,81.1682553800929,-1.7639999999999958,improves,1,True,0.0,0.0,0,0,True,-1.7639999999999958
+SITE-151,DT-249,SAFE,SAFE,82.9322553800929,81.1682553800929,-1.7639999999999958,improves,1,True,0.0,0.0,0,0,True,-1.7639999999999958
