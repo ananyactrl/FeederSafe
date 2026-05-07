@@ -27,7 +27,7 @@ def run_pipeline(config: AppConfig | None = None) -> dict[str, Path]:
         site_results_for_coupling,
         feeders=synthetic.feeders,
     )
-    site_portfolio = build_site_portfolio(coupled, part_b.site_results)
+    site_portfolio = build_site_portfolio(coupled, site_results_for_coupling)
     coupling_iterations = (
         coupled.groupby("iteration", as_index=False)
         .agg(
@@ -64,7 +64,7 @@ def run_pipeline(config: AppConfig | None = None) -> dict[str, Path]:
     part_a.nudge_recommendations.to_csv(outputs["nudge_recommendations"], index=False)
     part_a.counterfactuals.to_csv(outputs["counterfactuals"], index=False)
     part_a.with_without_signal.to_csv(outputs["with_without_signal"], index=False)
-    part_b.site_results.to_csv(outputs["site_results"], index=False)
+    site_results_for_coupling.to_csv(outputs["site_results"], index=False)
     coupled.to_csv(outputs["coupled_impact"], index=False)
     coupling_iterations.to_csv(outputs["coupling_iterations"], index=False)
     site_portfolio.to_csv(outputs["site_portfolio"], index=False)

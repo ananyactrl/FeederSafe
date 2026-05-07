@@ -1,33 +1,19 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import folium
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from streamlit_folium import st_folium
 
-
-@st.cache_data(show_spinner=False)
-def _read_csv_cached(path: Path) -> pd.DataFrame:
+# ---- NO CACHING - reads fresh CSV every time ----
+def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
-
-
-def _load_frame(data_key: str, default_path: Path) -> pd.DataFrame:
-    state_data = st.session_state.get("data", {})
-    if isinstance(state_data, dict) and data_key in state_data:
-        return state_data[data_key].copy()
-    if default_path.exists():
-        return _read_csv_cached(default_path).copy()
-    return pd.DataFrame()
-
 
 st.title("FeederSafe | Coupled Impact Analysis")
 st.caption("Before/after feeder stress after placing approved sites and simulating coupled grid relief.")
-st.info(
-    "BESCOM planners can use this coupled view to prioritize sites that reduce transformer stress across the network, not just locally."
-)
+st.info("BESCOM planners can use this coupled view to prioritize sites that reduce transformer stress across the network, not just locally.")
+
 data_dir = Path("data/processed")
 required = [
     "coupled_impact.csv",
@@ -37,22 +23,27 @@ required = [
     "feeder_hourly_risk.csv",
     "site_results.csv",
 ]
+
 if not all((data_dir / x).exists() for x in required):
     st.warning("Run the pipeline from Home page first.")
     st.stop()
 
-coupled = _load_frame("coupled_impact", data_dir / "coupled_impact.csv")
-iters = _load_frame("coupling_iterations", data_dir / "coupling_iterations.csv")
-portfolio = _load_frame("site_portfolio", data_dir / "site_portfolio.csv")
-feeders = _load_frame("feeders", data_dir / "feeders.csv")
-risk = _load_frame("feeder_hourly_risk", data_dir / "feeder_hourly_risk.csv")
-sites = _load_frame("site_results", data_dir / "site_results.csv")
+coupled = _read_csv(data_dir / "coupled_impact.csv")
+iters = _read_csv(data_dir / "coupling_iterations.csv")
+portfolio = _read_csv(data_dir / "site_portfolio.csv")
+feeders = _read_csv(data_dir / "feeders.csv")
+risk = _read_csv(data_dir / "feeder_hourly_risk.csv")
+sites = _read_csv(data_dir / "site_results.csv")
+
+# Debug: confirm fresh data loaded
+st.write(f"Loaded: {len(portfolio)} portfolio rows, {len(coupled)} coupled rows, {(sites['decision']=='APPROVED').sum()} approved sites")
 
 approved = sites[sites["decision"] == "APPROVED"]["site_id"].tolist()
 if not approved:
     st.error("No approved sites available under current veto thresholds.")
     st.stop()
 
+# ---- Portfolio Section ----
 st.subheader("Recommended rollout portfolio")
 top_k = 0
 if portfolio.empty:
@@ -64,42 +55,49 @@ else:
         top_k = n
     else:
         top_k = st.slider("Top-K recommended sites", min_value=1, max_value=min(30, n), value=min(10, n))
+
     portfolio_view = portfolio.head(top_k).copy()
     portfolio_view["priority_phase"] = portfolio_view["rollout_priority"].apply(
         lambda x: "Phase 1" if "Phase 1" in str(x) else ("Phase 2" if "Phase 2" in str(x) else "Phase 3")
     )
+
     st.caption("Table: prioritized rollout portfolio from coupled optimization.")
-    st.markdown("""
-    <style>
-    .stDataFrame td, .stDataFrame th {
-        color: #111111 !important;
-        background-color: #ffffff !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+
+    def _color_portfolio_row(row):
+        if "Phase 1" in str(row["rollout_priority"]):
+            bg = "#d9f2d9"
+        elif "Phase 2" in str(row["rollout_priority"]):
+            bg = "#fff6cc"
+        else:
+            bg = "#ebebeb"
+        return [f"background-color: {bg}; color: #111111"] * len(row)
+
     st.dataframe(
         portfolio_view[
-            ["portfolio_rank", "site_id", "zone", "assigned_feeder_id", "portfolio_score", "demand_score", "mean_delta_capacity_pct", "iterations_selected", "rollout_priority"]
-        ].style.apply(
-            lambda row: [
-                "background-color: #d9f2d9; color: #111111 !important" if "Phase 1" in str(row["rollout_priority"])
-                else ("background-color: #fff6cc; color: #111111 !important" if "Phase 2" in str(row["rollout_priority"]) else "background-color: #ebebeb; color: #111111 !important")
-            ]
-            * len(row),
-            axis=1,
-        ),
+            ["portfolio_rank", "site_id", "zone", "assigned_feeder_id", "portfolio_score",
+             "demand_score", "mean_delta_capacity_pct", "iterations_selected", "rollout_priority"]
+        ].style
+        .apply(_color_portfolio_row, axis=1)
+        .set_properties(**{"color": "#111111"}),
         use_container_width=True,
     )
 
-site_id = st.selectbox("Select approved site", sorted(approved))
+# ---- Site Selector ----
+# Default to the top-ranked portfolio site so the feeder impact table shows real deltas on load.
+default_site = portfolio.iloc[0]["site_id"] if not portfolio.empty else approved[0]
+if default_site not in approved:
+    default_site = approved[0]
+site_id = st.selectbox("Select approved site", sorted(approved), index=sorted(approved).index(default_site))
 max_iter = int(coupled["iteration"].max()) if not coupled.empty else 1
 if max_iter <= 1:
     iteration = 1
     st.caption("Only one coupling iteration available for this run.")
 else:
-    iteration = st.slider("Iteration", min_value=1, max_value=max_iter, value=max_iter)
+    iteration = st.slider("Iteration", min_value=1, max_value=max_iter, value=1)
+
 impact = coupled[(coupled["site_id"] == site_id) & (coupled["iteration"] == iteration)].copy()
 
+# ---- Convergence ----
 st.subheader("Optimization convergence")
 if not iters.empty:
     st.line_chart(iters.set_index("iteration")[["objective_before", "objective_after"]])
@@ -109,6 +107,7 @@ if not iters.empty:
     c2.metric("Stressed feeders (after)", int(latest["stressed_after"]))
     c3.metric("Converged", "Yes" if bool(latest["converged"]) else "No")
 
+# ---- Map ----
 base = risk.groupby("feeder_id", as_index=False).tail(1)[["feeder_id", "status", "capacity_pct"]]
 merged = feeders.merge(base, on="feeder_id", how="left").merge(
     impact[["feeder_id", "after_status", "capacity_pct_after"]], on="feeder_id", how="left"
@@ -119,10 +118,14 @@ merged["delta_capacity_pct"] = merged["capacity_pct_after"] - merged["capacity_p
 
 color_map = {"SAFE": "green", "HIGH": "orange", "CRITICAL": "red"}
 m = folium.Map(location=[12.97, 77.61], zoom_start=11, tiles="cartodbpositron")
-for row in merged.itertuples(index=False):
-    popup = f"{row.feeder_id}: {row.status} -> {row.after_status}"
+for _, row in merged.iterrows():
+    popup = f"{row['feeder_id']}: {row['status']} -> {row['after_status']}"
     folium.CircleMarker(
-        [row.lat, row.lon], radius=7, color=color_map.get(row.after_status, "blue"), fill=True, popup=popup
+        [row["lat"], row["lon"]],
+        radius=7,
+        color=color_map.get(row["after_status"], "blue"),
+        fill=True,
+        popup=popup,
     ).add_to(m)
 st_folium(m, width=1100, height=500)
 
@@ -134,33 +137,36 @@ st.info(
     f"and total stress by {abs(total_delta):.2f} capacity-% points."
 )
 
+# ---- Feeder Impact Table ----
 st.subheader("Feeder-level impact table")
-table_df = merged[["feeder_id", "zone", "status", "after_status", "capacity_pct", "capacity_pct_after", "delta_capacity_pct"]].rename(
+table_df = merged[
+    ["feeder_id", "zone", "status", "after_status", "capacity_pct", "capacity_pct_after", "delta_capacity_pct"]
+].rename(
     columns={
         "status": "before_status",
         "capacity_pct": "capacity_pct_before",
     }
 )
+
 st.caption("Table: feeder stress before and after selected portfolio impact.")
-st.markdown("""
-<style>
-.stDataFrame td, .stDataFrame th {
-    color: #111111 !important;
-    background-color: #ffffff !important;
-}
-</style>
-""", unsafe_allow_html=True)
+
+def _color_feeder_row(row):
+    if row["after_status"] == "CRITICAL":
+        bg = "#ffd6d6"
+    elif row["after_status"] == "HIGH":
+        bg = "#ffe5cc"
+    else:
+        bg = "#dcf5dc"
+    return [f"background-color: {bg}; color: #111111"] * len(row)
+
 st.dataframe(
-    table_df.style.apply(
-        lambda row: [
-            "background-color: #ffd6d6; color: #111111 !important"
-            if row["after_status"] == "CRITICAL"
-            else ("background-color: #ffe5cc; color: #111111 !important" if row["after_status"] == "HIGH" else "background-color: #dcf5dc; color: #111111 !important")
-        ]
-        * len(row),
-        axis=1,
-    ),
+    table_df.style
+    .apply(_color_feeder_row, axis=1)
+    .set_properties(**{"color": "#111111"}),
     use_container_width=True,
+    column_config={
+        "zone": st.column_config.TextColumn("zone", width=150),
+    },
 )
 
 delta_fig = px.bar(
@@ -173,4 +179,3 @@ delta_fig = px.bar(
     labels={"feeder_id": "Feeder", "delta_capacity_pct": "Delta capacity-%"},
 )
 st.plotly_chart(delta_fig, use_container_width=True)
-
