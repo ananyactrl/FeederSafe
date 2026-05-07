@@ -35,9 +35,6 @@ feeders = _read_csv(data_dir / "feeders.csv")
 risk = _read_csv(data_dir / "feeder_hourly_risk.csv")
 sites = _read_csv(data_dir / "site_results.csv")
 
-# Debug: confirm fresh data loaded
-st.write(f"Loaded: {len(portfolio)} portfolio rows, {len(coupled)} coupled rows, {(sites['decision']=='APPROVED').sum()} approved sites")
-
 approved = sites[sites["decision"] == "APPROVED"]["site_id"].tolist()
 if not approved:
     st.error("No approved sites available under current veto thresholds.")
@@ -93,7 +90,7 @@ if max_iter <= 1:
     iteration = 1
     st.caption("Only one coupling iteration available for this run.")
 else:
-    iteration = st.slider("Iteration", min_value=1, max_value=max_iter, value=1)
+    iteration = st.slider("Iteration", min_value=1, max_value=max_iter, value=max_iter)
 
 impact = coupled[(coupled["site_id"] == site_id) & (coupled["iteration"] == iteration)].copy()
 
