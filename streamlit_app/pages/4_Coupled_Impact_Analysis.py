@@ -28,19 +28,6 @@ st.caption("Before/after feeder stress after placing approved sites and simulati
 st.info(
     "BESCOM planners can use this coupled view to prioritize sites that reduce transformer stress across the network, not just locally."
 )
-st.markdown(
-    """
-    <style>
-    div[data-testid="stDataFrame"] td {
-        color: #111111 !important;
-    }
-    div[data-testid="stDataFrame"] th {
-        color: #e6e6e6 !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 data_dir = Path("data/processed")
 required = [
     "coupled_impact.csv",
@@ -82,6 +69,14 @@ else:
         lambda x: "Phase 1" if "Phase 1" in str(x) else ("Phase 2" if "Phase 2" in str(x) else "Phase 3")
     )
     st.caption("Table: prioritized rollout portfolio from coupled optimization.")
+    st.markdown("""
+    <style>
+    .stDataFrame td, .stDataFrame th {
+        color: #111111 !important;
+        background-color: #ffffff !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     st.dataframe(
         portfolio_view[
             ["portfolio_rank", "site_id", "zone", "assigned_feeder_id", "portfolio_score", "demand_score", "mean_delta_capacity_pct", "iterations_selected", "rollout_priority"]
@@ -147,6 +142,14 @@ table_df = merged[["feeder_id", "zone", "status", "after_status", "capacity_pct"
     }
 )
 st.caption("Table: feeder stress before and after selected portfolio impact.")
+st.markdown("""
+<style>
+.stDataFrame td, .stDataFrame th {
+    color: #111111 !important;
+    background-color: #ffffff !important;
+}
+</style>
+""", unsafe_allow_html=True)
 st.dataframe(
     table_df.style.apply(
         lambda row: [
