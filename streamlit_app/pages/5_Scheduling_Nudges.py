@@ -43,8 +43,8 @@ elasticity = st.slider("Short-run price elasticity", min_value=-0.8, max_value=-
 discount = st.slider("Discount (Rs/kWh)", min_value=0.5, max_value=6.0, value=3.0, step=0.5)
 
 nudges["simulated_shift_pct"] = np.clip(abs(elasticity) * discount * 10, 3, 40).round(1)
-critical_count = int((nudges["status"] == "CRITICAL").sum())
-high_count = int((nudges["status"] == "HIGH").sum())
+critical_count = nudges[nudges['status']=='CRITICAL']['feeder_id'].nunique()
+high_count = nudges[nudges['status']=='HIGH']['feeder_id'].nunique()
 estimated_shift_kw = float((nudges["simulated_shift_pct"] / 100.0 * 100).sum())
 st.subheader("Tonight's Risk Summary")
 st.write(
@@ -69,7 +69,7 @@ for feeder_id, group in nudges.sort_values(["status", "simulated_shift_pct"], as
             title="Simulated load shift (index)",
             labels={"scenario": "Scenario", "load_index": "Relative load index"},
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"nudge_chart_{feeder_id}")
         st.caption(
             f"Elasticity basis: short-run own-price elasticity {elasticity:.2f}, "
             f"discount {discount:.1f} Rs/kWh, simulated shift {row['simulated_shift_pct']:.1f}%."

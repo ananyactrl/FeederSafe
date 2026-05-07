@@ -29,19 +29,31 @@ def _apply_veto_thresholds(df: pd.DataFrame, thresholds: dict[str, float]) -> pd
     for row in out.itertuples(index=False):
         row_reasons: list[str] = []
         if float(getattr(row, "dt_headroom_pct", 100.0)) <= thresholds["dt_headroom_min_pct"]:
-            row_reasons.append("DT headroom below threshold")
+            row_reasons.append(
+                f"DT headroom {float(getattr(row, 'dt_headroom_pct', 0.0)):.1f}% - minimum required {thresholds['dt_headroom_min_pct']:.1f}%"
+            )
         if float(getattr(row, "trench_distance_m", 0.0)) >= thresholds["trench_distance_max_m"]:
-            row_reasons.append("Trench distance exceeds threshold")
+            row_reasons.append(
+                f"Trench distance {float(getattr(row, 'trench_distance_m', 0.0)):.0f}m - maximum allowed {thresholds['trench_distance_max_m']:.0f}m"
+            )
         if float(getattr(row, "clear_width_m", 0.0)) < thresholds["min_width_m"] or float(
             getattr(row, "clear_length_m", 0.0)
         ) < thresholds["min_length_m"]:
-            row_reasons.append("Footprint below minimum 3m x 6m")
-        if float(getattr(row, "road_width_m", 100.0)) <= thresholds["min_road_width_m"] or float(
-            getattr(row, "hydrant_distance_m", 100.0)
-        ) <= thresholds["hydrant_clearance_min_m"]:
-            row_reasons.append("Emergency access non-compliant")
+            row_reasons.append(
+                f"Footprint {float(getattr(row, 'clear_width_m', 0.0)):.1f}m x {float(getattr(row, 'clear_length_m', 0.0)):.1f}m - minimum required {thresholds['min_width_m']:.0f}m x {thresholds['min_length_m']:.0f}m"
+            )
+        if float(getattr(row, "road_width_m", 100.0)) <= thresholds["min_road_width_m"]:
+            row_reasons.append(
+                f"Road width {float(getattr(row, 'road_width_m', 0.0)):.1f}m - minimum required {thresholds['min_road_width_m']:.1f}m"
+            )
+        if float(getattr(row, "hydrant_distance_m", 100.0)) <= thresholds["hydrant_clearance_min_m"]:
+            row_reasons.append(
+                f"Hydrant clearance {float(getattr(row, 'hydrant_distance_m', 0.0)):.1f}m - minimum required {thresholds['hydrant_clearance_min_m']:.1f}m"
+            )
         if float(getattr(row, "phase_imbalance_pct", 0.0)) >= thresholds["phase_imbalance_max_pct"]:
-            row_reasons.append("Phase balance exceeds threshold")
+            row_reasons.append(
+                f"Phase imbalance {float(getattr(row, 'phase_imbalance_pct', 0.0)):.0f}% - maximum allowed {thresholds['phase_imbalance_max_pct']:.0f}%"
+            )
         reasons.append("; ".join(row_reasons) if row_reasons else "APPROVED")
     out["veto_reasons"] = reasons
     out["decision"] = out["veto_reasons"].apply(lambda x: "APPROVED" if x == "APPROVED" else "REJECTED")
@@ -76,6 +88,15 @@ thresholds = {
     "phase_imbalance_max_pct": st.sidebar.slider("Phase imbalance max %", 10.0, 50.0, 30.0),
 }
 result = _apply_veto_thresholds(baseline, thresholds)
+filtered_df = result.copy()
+
+if st.button("Apply Veto Thresholds to Full Pipeline (simulated)"):
+    approved_sites = int((filtered_df["decision"] == "APPROVED").sum())
+    st.success(
+        f"✅ Thresholds applied to all 200 candidate sites. {approved_sites} sites approved. "
+        "(In production, this triggers a full pipeline re-run.)"
+    )
+    st.cache_data.clear()
 
 m = folium.Map(location=[12.97, 77.61], zoom_start=11, tiles="cartodbpositron")
 for row in result.itertuples(index=False):

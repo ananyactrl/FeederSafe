@@ -81,19 +81,42 @@ def run_part_b(
     for row in df.itertuples(index=False):
         reasons = []
         if row.dt_headroom_pct <= config.dt_headroom_min_pct:
-            reasons.append("DT headroom below threshold")
+            reasons.append(
+                f"DT headroom {row.dt_headroom_pct:.1f}% - minimum required {config.dt_headroom_min_pct:.1f}%"
+            )
         if row.trench_distance_m >= config.trench_distance_max_m:
-            reasons.append("Trench distance exceeds threshold")
+            reasons.append(
+                f"Trench distance {row.trench_distance_m:.0f}m - maximum allowed {config.trench_distance_max_m:.0f}m"
+            )
         if row.clear_width_m < config.min_width_m or row.clear_length_m < config.min_length_m:
-            reasons.append("Footprint below minimum 3m x 6m")
-        if row.road_width_m <= config.min_road_width_m or row.hydrant_distance_m <= config.hydrant_clearance_min_m:
-            reasons.append("Emergency access non-compliant")
+            reasons.append(
+                f"Footprint {row.clear_width_m:.1f}m x {row.clear_length_m:.1f}m - minimum required {config.min_width_m:.0f}m x {config.min_length_m:.0f}m"
+            )
+        if row.road_width_m <= config.min_road_width_m:
+            reasons.append(
+                f"Road width {row.road_width_m:.1f}m - minimum required {config.min_road_width_m:.1f}m"
+            )
+        if row.hydrant_distance_m <= config.hydrant_clearance_min_m:
+            reasons.append(
+                f"Hydrant clearance {row.hydrant_distance_m:.1f}m - minimum required {config.hydrant_clearance_min_m:.1f}m"
+            )
         if row.phase_imbalance_pct >= config.phase_imbalance_max_pct:
-            reasons.append("Phase balance exceeds threshold")
+            reasons.append(
+                f"Phase imbalance {row.phase_imbalance_pct:.0f}% - maximum allowed {config.phase_imbalance_max_pct:.0f}%"
+            )
         rejections.append("; ".join(reasons) if reasons else "APPROVED")
 
     df["veto_reasons"] = rejections
-    df["decision"] = np.where(df["veto_reasons"].eq("APPROVED"), "APPROVED", "REJECTED")
+    df["decision"] = "APPROVED"
+    rejected_mask = df["veto_reasons"] != "APPROVED"
+    df.loc[rejected_mask, "decision"] = "REJECTED"
+
+    # Add assertions to ensure data integrity for veto reasons
+    rejected_mask = df['decision'] == 'REJECTED'
+    assert df[rejected_mask]['veto_reasons'].notna().all(), \
+      "Some REJECTED sites have null veto_reasons"
+    assert df[rejected_mask]['veto_reasons'].str.len().gt(0).all(), \
+      "Some REJECTED sites have empty veto_reasons"
 
     # ── Nearest feasible alternative for rejected sites ──────────────────────
     approved = df[df["decision"].eq("APPROVED")].copy()

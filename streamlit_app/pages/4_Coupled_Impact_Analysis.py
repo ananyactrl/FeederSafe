@@ -28,6 +28,19 @@ st.caption("Before/after feeder stress after placing approved sites and simulati
 st.info(
     "BESCOM planners can use this coupled view to prioritize sites that reduce transformer stress across the network, not just locally."
 )
+st.markdown(
+    """
+    <style>
+    div[data-testid="stDataFrame"] td {
+        color: #111111 !important;
+    }
+    div[data-testid="stDataFrame"] th {
+        color: #e6e6e6 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 data_dir = Path("data/processed")
 required = [
     "coupled_impact.csv",
@@ -74,8 +87,8 @@ else:
             ["portfolio_rank", "site_id", "zone", "assigned_feeder_id", "portfolio_score", "demand_score", "mean_delta_capacity_pct", "iterations_selected", "rollout_priority"]
         ].style.apply(
             lambda row: [
-                "background-color: #d9f2d9" if "Phase 1" in str(row["rollout_priority"])
-                else ("background-color: #fff6cc" if "Phase 2" in str(row["rollout_priority"]) else "background-color: #ebebeb")
+                "background-color: #d9f2d9; color: #111111 !important" if "Phase 1" in str(row["rollout_priority"])
+                else ("background-color: #fff6cc; color: #111111 !important" if "Phase 2" in str(row["rollout_priority"]) else "background-color: #ebebeb; color: #111111 !important")
             ]
             * len(row),
             axis=1,
@@ -137,9 +150,9 @@ st.caption("Table: feeder stress before and after selected portfolio impact.")
 st.dataframe(
     table_df.style.apply(
         lambda row: [
-            "background-color: #ffd6d6"
+            "background-color: #ffd6d6; color: #111111 !important"
             if row["after_status"] == "CRITICAL"
-            else ("background-color: #ffe5cc" if row["after_status"] == "HIGH" else "background-color: #dcf5dc")
+            else ("background-color: #ffe5cc; color: #111111 !important" if row["after_status"] == "HIGH" else "background-color: #dcf5dc; color: #111111 !important")
         ]
         * len(row),
         axis=1,

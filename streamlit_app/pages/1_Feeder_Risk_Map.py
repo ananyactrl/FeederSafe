@@ -25,6 +25,7 @@ def _load_frame(data_key: str, default_path: Path) -> pd.DataFrame:
 
 st.title("FeederSafe | Feeder Risk Map")
 st.caption("All Bengaluru feeders with hour-wise overload risk, capacity headroom, and operator actions.")
+st.caption("Bengaluru Masked Grid Network")
 st.info(
     "BESCOM operates thousands of distribution transformers in Bengaluru; this map highlights simulated feeder overload risk by hour."
 )

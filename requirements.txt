@@ -3,8 +3,6 @@ pandas
 scikit-learn
 lightgbm
 torch
-geopandas
-shapely
 folium
 streamlit
 streamlit-folium

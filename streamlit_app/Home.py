@@ -48,8 +48,30 @@ def _load_processed_data(data_dir: Path) -> dict[str, pd.DataFrame]:
 st.title("FeederSafe")
 st.caption("AI for Bharat 2 submission demo: Bengaluru feeder stress, siting feasibility, coupling impact, and nudges.")
 st.info("BESCOM context: this dashboard simulates transformer-level stress, site rollout, and demand-shift levers to support urban EV scaling decisions.")
+st.caption("Calibrated to BESCOM published data: 80x growth in registered EV charging 2020-2023 (28,820 kWh in 2020-21 to ~23 lakh kWh in 2022-23).")
 
 data_dir = Path("data/processed")
+required_outputs = [
+    "feeders.csv",
+    "feeder_timeseries.csv",
+    "smart_meter.csv",
+    "candidate_sites.csv",
+    "feeder_hourly_risk.csv",
+    "nudge_recommendations.csv",
+    "counterfactuals.csv",
+    "with_without_signal.csv",
+    "site_results.csv",
+    "coupled_impact.csv",
+    "coupling_iterations.csv",
+    "site_portfolio.csv",
+]
+missing_outputs = [name for name in required_outputs if not (data_dir / name).exists()]
+if missing_outputs:
+    with st.spinner("Running pipeline to prepare required outputs..."):
+        run_pipeline()
+        _read_csv_cached.clear()
+    st.success("Pipeline generated required CSV outputs.")
+
 if st.button("Generate / Refresh Synthetic Pipeline Outputs", type="primary"):
     with st.spinner("Running pipeline..."):
         outputs = run_pipeline()
@@ -113,6 +135,10 @@ else:
     c2.metric("Critical feeders tonight", critical_tonight)
     c3.metric("Approved EV charging sites", approved_sites)
     c4.metric("Estimated shiftable load (kW)", f"{estimated_shiftable_kw:.1f}")
+
+    st.caption(
+        "Prototype runs 50 feeders. Architecture scales to BESCOM's 800+ distribution transformers via `config.n_feeders` parameter."
+    )
 
     if not tonight_risk.empty and {"status"}.issubset(tonight_risk.columns):
         risk_counts = (

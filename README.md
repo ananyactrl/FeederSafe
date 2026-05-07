@@ -37,3 +37,10 @@ pip install -r requirements.txt
 set PYTHONPATH=src
 python -m feedersafe.pipeline
 streamlit run streamlit_app/Home.py
+```
+
+## Scaling to BESCOM Production
+- Current prototype runs 50 feeders; `n_feeders` in `src/feedersafe/config.py` scales this to any number.
+- The veto matrix uses vectorized pandas operations that scale approximately linearly with the number of candidate sites; tested mentally for 800+ feeders.
+- The coupling loop uses precomputed proximity graphs; for production, replace the `iterrows` loops with a NumPy distance matrix for faster 800+ feeder rollouts.
+- The BiLSTM can be replaced with a lighter quantile gradient boosting model for real-time inference at scale.

@@ -12,31 +12,36 @@ def _status_from_capacity(capacity_pct: float) -> str:
     return "SAFE"
 
 
-def _site_feeder_relief(
-    site_row: pd.Series,
-    feeder_row: pd.Series,
-    elasticity: float,
-    nudge_strength: float,
-) -> float:
+def _distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Fast local approximation for city-scale point distance."""
+    km_per_deg_lat = 111.0
+    km_per_deg_lon = 111.0 * np.cos(np.deg2rad((lat1 + lat2) / 2.0))
+    d_lat_km = (lat2 - lat1) * km_per_deg_lat
+    d_lon_km = (lon2 - lon1) * km_per_deg_lon
+    return float(np.sqrt(d_lat_km**2 + d_lon_km**2) * 1000.0)
+
+
+def _site_feeder_relief_pct(site_row: pd.Series, feeder_row: pd.Series, elasticity: float) -> float:
     """
-    Relief model for one site-feeder pair.
-    - Base public-shift effect scales with elasticity and nudge strength.
-    - Stronger effect when site belongs to same stressed feeder zone.
-    - Small spillover to nearby stressed feeders.
+    Coupling rule:
+    - Feeders within 2000m of a placed public charger receive 3-8% relief.
+    - Relief decays with distance and scales mildly with site demand score.
     """
-    base_relief = max(1.5, min(10.0, abs(elasticity) * 14 * nudge_strength))
+    distance_m = _distance_meters(
+        float(site_row["lat"]),
+        float(site_row["lon"]),
+        float(feeder_row["lat"]),
+        float(feeder_row["lon"]),
+    )
+    if distance_m > 2000:
+        return 0.0
 
-    if site_row["assigned_feeder_id"] == feeder_row["feeder_id"]:
-        return base_relief * 1.6
-
-    # zone comparison — feeder_hourly_risk may not carry a zone column,
-    # so use .get() with a sentinel to avoid KeyError
-    site_zone = site_row.get("zone", None)
-    feeder_zone = feeder_row.get("zone", None)
-    if site_zone is not None and feeder_zone is not None and site_zone == feeder_zone:
-        return base_relief * 0.7
-
-    return base_relief * 0.35
+    distance_factor = max(0.0, 1.0 - (distance_m / 2000.0))
+    demand_norm = np.clip(float(site_row.get("demand_score", 70.0)) / 100.0, 0.0, 1.0)
+    base_relief = 3.0 + (5.0 * distance_factor)
+    demand_adjust = 0.75 + 0.5 * demand_norm
+    elasticity_adjust = np.clip(abs(elasticity) / 0.3, 0.75, 1.25)
+    return float(np.clip(base_relief * demand_adjust * elasticity_adjust, 3.0, 8.0))
 
 
 def run_coupled_impact(
@@ -48,19 +53,29 @@ def run_coupled_impact(
     convergence_eps: float = 0.2,
     max_sites_per_iteration: int = 3,
 ) -> pd.DataFrame:
+    # Focus coupling on evening stress window where home-to-public shift is meaningful.
+    evening_window = feeder_hourly_risk[feeder_hourly_risk["hour"].between(18, 21)].copy()
+    if evening_window.empty:
+        evening_window = feeder_hourly_risk.copy()
     stressed = (
-        feeder_hourly_risk.sort_values("hour")
+        evening_window.sort_values("hour")
         .groupby("feeder_id", as_index=False)
         .tail(1)
         .reset_index(drop=True)
     )
     stressed["status"] = stressed["capacity_pct"].map(_status_from_capacity)
 
-    # Enrich stressed with zone if available from feeders
-    if feeders is not None and "zone" in feeders.columns and "zone" not in stressed.columns:
-        stressed = stressed.merge(
-            feeders[["feeder_id", "zone"]], on="feeder_id", how="left"
-        )
+    site_portfolio = site_results[site_results["decision"] == "APPROVED"]
+    print(f"Portfolio size entering coupling: {len(site_portfolio)}")
+    print(f"Stressed feeders entering coupling: {len(stressed)}")
+
+    # Enrich stressed with feeder geo attrs for proximity-based coupling.
+    if feeders is not None:
+        merge_cols = ["feeder_id"]
+        for optional_col in ("zone", "lat", "lon"):
+            if optional_col in feeders.columns and optional_col not in stressed.columns:
+                merge_cols.append(optional_col)
+        stressed = stressed.merge(feeders[merge_cols], on="feeder_id", how="left")
 
     approved = (
         site_results[site_results["decision"].eq("APPROVED")]
@@ -106,9 +121,7 @@ def run_coupled_impact(
             for _, feeder in stressed.iterrows():
                 if feeder["capacity_pct"] <= 85:
                     continue
-                total_relief += _site_feeder_relief(
-                    site, feeder, elasticity=elasticity, nudge_strength=1.0
-                )
+                total_relief += _site_feeder_relief_pct(site, feeder, elasticity=elasticity)
             penalty = max(0.0, (65 - float(site.get("demand_score", 65))) * 0.03)
             scores.append((site["site_id"], total_relief - penalty))
 
@@ -123,24 +136,24 @@ def run_coupled_impact(
 
         before_map = stressed.set_index("feeder_id")["capacity_pct"].to_dict()
         selected_this_iter = approved[approved["site_id"].isin(pick_ids)].copy()
+        n_affected = 0
 
         for feeder_idx, feeder in stressed.iterrows():
             relief = 0.0
             for _, site in selected_this_iter.iterrows():
-                relief += _site_feeder_relief(
-                    site, feeder, elasticity=elasticity, nudge_strength=1.0
-                )
-            health_factor = (
-                1.0 if feeder["capacity_pct"] > 100
-                else (0.8 if feeder["capacity_pct"] > 85 else 0.4)
-            )
+                relief += _site_feeder_relief_pct(site, feeder, elasticity=elasticity)
+            if relief > 0:
+                n_affected += 1
             stressed.at[feeder_idx, "capacity_pct"] = max(
-                40.0, feeder["capacity_pct"] - relief * health_factor
+                40.0, feeder["capacity_pct"] - relief
             )
 
         stressed["status"] = stressed["capacity_pct"].map(_status_from_capacity)
         stressed_count_after = int((stressed["capacity_pct"] > 85).sum())
         objective_after = float(np.maximum(stressed["capacity_pct"] - 85, 0).sum())
+        print(f"Iteration {iteration}: placed {len(selected_this_iter)} sites, "
+              f"relief applied to {n_affected} feeders, "
+              f"objective_after={objective_after:.4f}")
         delta_obj = objective_before - objective_after
         converged = abs(delta_obj) <= convergence_eps
 

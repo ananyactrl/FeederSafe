@@ -10,6 +10,8 @@ class AppConfig:
     n_days: int = 90
     interval_minutes: int = 15
     output_dir: Path = Path("data/processed")
+    # Fixed reference timestamp for deterministic synthetic generation.
+    data_end_timestamp_utc: str = "2026-01-31T23:45:00Z"
 
     # Part B adjustable veto defaults.
     dt_headroom_min_pct: float = 15.0
